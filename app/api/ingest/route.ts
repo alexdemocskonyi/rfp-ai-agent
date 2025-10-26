@@ -1,6 +1,6 @@
 // app/api/ingest/route.ts
 import { NextResponse } from "next/server";
-import { v4 as uuidv4 } from "uuid";
+import { randomUUID } from "crypto";
 import * as XLSX from "xlsx";
 import { QAItem } from "@/lib/kb";
 import { embedBatch } from "@/lib/embed";
@@ -81,7 +81,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: "No files uploaded" }, { status: 400 });
     }
 
-    const batchId = uuidv4();
+    const batchId = randomUUID();
     const items: QAItem[] = [];
 
     for (const f of files) {
@@ -96,7 +96,7 @@ export async function POST(req: Request) {
         const qa = extractQAFromWorkbook(buf, name);
         for (const row of qa) {
           items.push({
-            id: uuidv4(),
+            id: randomUUID(),
             Q: row.Q,
             A: row.A ?? "",
             source: row.source,
@@ -109,7 +109,7 @@ export async function POST(req: Request) {
         const pdfParse = (mod && "default" in mod) ? mod.default : mod;
         const data = await pdfParse(buf);
         items.push({
-          id: uuidv4(),
+          id: randomUUID(),
           Q: `PDF content from ${name}`,
           A: (data?.text || "").slice(0, 20000),
           source: name,
@@ -139,7 +139,7 @@ export async function POST(req: Request) {
           }
         }
         items.push({
-          id: uuidv4(),
+          id: randomUUID(),
           Q: `${ext.toUpperCase().slice(1)} content from ${name}`,
           A: text.slice(0, 20000),
           source: name,
@@ -171,7 +171,7 @@ export async function POST(req: Request) {
       const made = makeChunks(base);
       for (const m of made) {
         chunkRows.push({
-          id: uuidv4(),
+          id: randomUUID(),
           item_id: it.id,
           batch_id: batchId,
           ord: m.ord,

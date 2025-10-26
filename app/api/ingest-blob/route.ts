@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { v4 as uuidv4 } from "uuid";
+import { randomUUID } from "crypto";
 import * as XLSX from "xlsx";
 import { QAItem } from "@/lib/kb";
 import { embedBatch } from "@/lib/embed";
@@ -63,19 +63,19 @@ export async function POST(req: Request) {
     const name = providedName || (new URL(url).pathname.split("/").pop() || "upload.bin");
     const ext = "." + (name.split(".").pop() || "").toLowerCase();
 
-    const batchId = uuidv4();
+    const batchId = randomUUID();
     const items: QAItem[] = [];
 
     if (ext === ".xlsx" || ext === ".xls" || ext === ".csv") {
       const qa = extractQAFromWorkbook(buf, name);
       for (const row of qa) {
-        items.push({ id: uuidv4(), Q: row.Q, A: row.A ?? "", source: row.source, batchId, createdAt: new Date().toISOString() });
+        items.push({ id: randomUUID(), Q: row.Q, A: row.A ?? "", source: row.source, batchId, createdAt: new Date().toISOString() });
       }
     } else if (ext === ".pdf") {
       const mod: any = await import("@cedrugs/pdf-parse");
       const pdfParse = (mod && "default" in mod) ? mod.default : mod;
       const data = await pdfParse(buf);
-      items.push({ id: uuidv4(), Q: "PDF content from " + name, A: String(data?.text || "").slice(0, 20000), source: name, batchId, createdAt: new Date().toISOString() });
+      items.push({ id: randomUUID(), Q: "PDF content from " + name, A: String(data?.text || "").slice(0, 20000), source: name, batchId, createdAt: new Date().toISOString() });
     } else if (ext === ".docx" || ext === ".docm") {
       let text = "";
       try {
@@ -87,7 +87,7 @@ export async function POST(req: Request) {
       } catch {
         text = await extractDocxWithZip(buf);
       }
-      items.push({ id: uuidv4(), Q: ext.toUpperCase().slice(1) + " content from " + name, A: text.slice(0, 20000), source: name, batchId, createdAt: new Date().toISOString() });
+      items.push({ id: randomUUID(), Q: ext.toUpperCase().slice(1) + " content from " + name, A: text.slice(0, 20000), source: name, batchId, createdAt: new Date().toISOString() });
     } else {
       return NextResponse.json({ ok:false, error:"Unsupported file type: " + ext }, { status:415 });
     }
@@ -105,7 +105,7 @@ export async function POST(req: Request) {
       const made = makeChunks(base);
       for (const m of made) {
         chunkRows.push({
-          id: uuidv4(), item_id: it.id, batch_id: batchId, ord: m.ord,
+          id: randomUUID(), item_id: it.id, batch_id: batchId, ord: m.ord,
           content: m.content, token_count: m.token_count, created_at: new Date().toISOString()
         });
       }
