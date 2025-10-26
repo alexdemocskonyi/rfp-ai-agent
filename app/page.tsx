@@ -7,6 +7,7 @@ type IngestResponse = {
   batchId?: string;
   count?: number;
   embedded?: number;
+  chunked?: number;
   embeddingsKey?: string | null;
   error?: string;
 };
@@ -15,6 +16,7 @@ type StatsResponse = {
   ok: boolean;
   itemsCount: number | null;
   embeddingsCount: number | null;
+  chunksCount: number | null;
   qaPairsCount: number | null;
   qOnlyCount: number | null;
   error?: string;
@@ -77,7 +79,6 @@ export default function Page() {
   const xhrRef = useRef<XMLHttpRequest | null>(null);
   const erroredRef = useRef<boolean>(false);
 
-  // Client-side max upload guard (MB)
   const MAX_MB = Number(process.env.NEXT_PUBLIC_MAX_UPLOAD_MB || 10);
 
   function addToast(type: Toast["type"], msg: string, ttl = 5000) {
@@ -100,7 +101,6 @@ export default function Page() {
     }
   }
 
-  // Abort in-flight XHR if the user picks a new file
   function abortInFlight() {
     try {
       xhrRef.current?.abort();
@@ -115,9 +115,7 @@ export default function Page() {
       const data: StatsResponse = await res.json();
       setStats(data);
       setStatsUpdatedAt(new Date().toLocaleTimeString());
-      if (!data.ok && data.error) {
-        addToast("error", `Stats error: ${data.error}`);
-      }
+      if (!data.ok && data.error) addToast("error", `Stats error: ${data.error}`);
     } catch (e: any) {
       addToast("error", `Stats fetch failed: ${e?.message || e}`);
     } finally {
@@ -133,27 +131,33 @@ export default function Page() {
   async function upload(ev: React.ChangeEvent<HTMLInputElement>) {
     const f = ev.target.files?.[0];
 
-    // reset UI for every new selection
     abortInFlight();
     resetUI();
     if (!f) return;
 
-    // size/type guard (client-side)
     const mb = f.size / (1024 * 1024);
     if (mb > MAX_MB) {
       addToast("error", `File too large (${mb.toFixed(1)} MB). Max ${MAX_MB} MB in this build.`);
       return;
     }
-    const allowed = new Set([
+
+    // ✅ More permissive, robust type/extension check
+    const mime = (f.type || "").toLowerCase().trim();
+    const ext = (f.name.split(".").pop() || "").toLowerCase().trim();
+
+    const allowedExts = new Set(["xlsx", "xls", "csv", "pdf", "docx"]);
+    const allowedMimes = new Set([
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", // .xlsx
-      "application/vnd.ms-excel", // .xls
+      "application/vnd.ms-excel",                                         // .xls
       "text/csv",
       "application/pdf",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document", // .docx
+      "application/msword", // some systems report .docx incorrectly as this
     ]);
-    const ext = (f.name.split(".").pop() || "").toLowerCase();
-    const typeOk = allowed.has(f.type) || ["xlsx", "xls", "csv", "pdf"].includes(ext);
+
+    const typeOk = allowedExts.has(ext) || allowedMimes.has(mime);
     if (!typeOk) {
-      addToast("error", `Unsupported file type: ${f.type || "." + ext || "unknown"}`);
+      addToast("error", `Unsupported file type: ${mime || "." + ext || "unknown"}`);
       return;
     }
 
@@ -162,7 +166,6 @@ export default function Page() {
     const fd = new FormData();
     fd.append("files", f);
 
-    // Use XHR to track upload progress
     const xhr = new XMLHttpRequest();
     xhrRef.current = xhr;
 
@@ -170,7 +173,7 @@ export default function Page() {
 
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) {
-        const p = Math.max(1, Math.min(100, Math.round((e.loaded / e.total) * 70))); // map to 1–70%
+        const p = Math.max(1, Math.min(100, Math.round((e.loaded / e.total) * 70)));
         setStage("uploading");
         setPercent(p);
       }
@@ -179,7 +182,6 @@ export default function Page() {
     xhr.onreadystatechange = () => {
       if (xhr.readyState !== 4) return;
 
-      // stop “processing” animation if running
       if (processingTimer.current) {
         window.clearInterval(processingTimer.current);
         processingTimer.current = null;
@@ -190,10 +192,9 @@ export default function Page() {
       const isJSON = ct.includes("application/json");
 
       if (!isJSON) {
-        // Non-JSON (e.g., 413 Request Entity Too Large, HTML error page)
         let snippet = (xhr.responseText || "").slice(0, 160).replace(/\s+/g, " ").trim();
         if (status === 413) snippet = "File too large for server. Convert to CSV/XLSX or lower size limit.";
-        if (status === 415) snippet = "Unsupported media type. Try CSV/XLSX/PDF.";
+        if (status === 415) snippet = "Unsupported media type. Try CSV/XLSX/PDF/DOCX.";
         if (status >= 500 && !snippet) snippet = "Server error while processing the file.";
         setStage("error");
         setPercent(0);
@@ -216,9 +217,13 @@ export default function Page() {
 
         setStage("done");
         setPercent(100);
-        addToast("success", `Upload complete — Added ${data.count ?? 0} • Embedded ${data.embedded ?? 0}`);
+        addToast(
+          "success",
+          `Upload complete — Added ${data.count ?? 0} • Embedded ${data.embedded ?? 0}${
+            typeof data.chunked === "number" ? ` • Chunks ${data.chunked}` : ""
+          }`
+        );
 
-        // refresh stats on success
         fetchStats();
       } catch (e: any) {
         setStage("error");
@@ -242,14 +247,11 @@ export default function Page() {
       xhrRef.current = null;
     };
 
-    // kick off request
     xhr.send(fd);
 
-    // When upload finishes but server is still working, show “Processing…”
     xhr.upload.onloadend = () => {
       if (!erroredRef.current) {
         setStage("processing");
-        // smooth, indeterminate progress: 70 → 95 while we wait
         let p = 70;
         processingTimer.current = window.setInterval(() => {
           p = Math.min(95, p + 1);
@@ -259,7 +261,6 @@ export default function Page() {
     };
   }
 
-  // Clean up on unmount
   useEffect(() => {
     return () => {
       abortInFlight();
@@ -269,6 +270,7 @@ export default function Page() {
 
   const items = stats?.itemsCount ?? 0;
   const embeddings = stats?.embeddingsCount ?? 0;
+  const chunks = stats?.chunksCount ?? 0;
   const qaPairs = stats?.qaPairsCount ?? 0;
   const qOnly = stats?.qOnlyCount ?? 0;
 
@@ -285,7 +287,7 @@ export default function Page() {
           background: "#f8fafc",
           border: "1px solid #e5e7eb",
           boxShadow: "0 2px 10px rgba(0,0,0,.03)",
-          maxWidth: 560,
+          maxWidth: 720,
         }}
       >
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
@@ -294,13 +296,7 @@ export default function Page() {
             <div>
               <div style={{ fontWeight: 700, fontSize: 16, color: "#111827" }}>Knowledge Base</div>
               <div style={{ fontSize: 12, color: "#6b7280" }}>
-                {statsLoading
-                  ? "Refreshing…"
-                  : stats?.ok
-                  ? `Updated ${statsUpdatedAt || "now"}`
-                  : stats?.error
-                  ? `Error: ${stats.error}`
-                  : "—"}
+                {statsLoading ? "Refreshing…" : stats?.ok ? `Updated ${statsUpdatedAt || "now"}` : stats?.error ? `Error: ${stats.error}` : "—"}
               </div>
             </div>
           </div>
@@ -326,44 +322,22 @@ export default function Page() {
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+            gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
             gap: 12,
             marginTop: 12,
           }}
         >
-          <div
-            style={{
-              padding: 12,
-              borderRadius: 10,
-              background: "#fff",
-              border: "1px solid #e5e7eb",
-            }}
-          >
+          <div style={{ padding: 12, borderRadius: 10, background: "#fff", border: "1px solid #e5e7eb" }}>
             <div style={{ fontSize: 12, color: "#6b7280" }}>Items</div>
             <div style={{ fontSize: 20, fontWeight: 700, color: "#111827" }}>{nf.format(items)}</div>
           </div>
 
-          <div
-            style={{
-              padding: 12,
-              borderRadius: 10,
-              background: "#fff",
-              border: "1px solid #e5e7eb",
-            }}
-          >
+          <div style={{ padding: 12, borderRadius: 10, background: "#fff", border: "1px solid #e5e7eb" }}>
             <div style={{ fontSize: 12, color: "#6b7280" }}>Embeddings</div>
             <div style={{ fontSize: 20, fontWeight: 700, color: "#111827" }}>{nf.format(embeddings)}</div>
           </div>
 
-          {/* Content Mix: Q&A pairs vs Q-only */}
-          <div
-            style={{
-              padding: 12,
-              borderRadius: 10,
-              background: "#fff",
-              border: "1px solid #e5e7eb",
-            }}
-          >
+          <div style={{ padding: 12, borderRadius: 10, background: "#fff", border: "1px solid #e5e7eb" }}>
             <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 6 }}>Content Mix</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
               <div>
@@ -376,12 +350,22 @@ export default function Page() {
               </div>
             </div>
           </div>
+
+          <div style={{ padding: 12, borderRadius: 10, background: "#fff", border: "1px solid #e5e7eb" }}>
+            <div style={{ fontSize: 12, color: "#6b7280" }}>Context Chunks</div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: "#111827" }}>{nf.format(chunks)}</div>
+          </div>
         </div>
       </section>
 
       {/* Uploader */}
       <label style={{ display: "inline-block", margin: "12px 0" }}>
-        <input type="file" onChange={upload} style={{ display: "block", margin: "8px 0" }} />
+        <input
+          type="file"
+          accept=".xlsx,.xls,.csv,.pdf,.docx"
+          onChange={upload}
+          style={{ display: "block", margin: "8px 0" }}
+        />
       </label>
 
       {/* Status / progress */}

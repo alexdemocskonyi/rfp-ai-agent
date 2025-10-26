@@ -1,3 +1,4 @@
+// app/api/test-supabase/route.ts
 import { NextResponse } from "next/server";
 import { supa, hasSupabase } from "@/lib/supadb";
 
@@ -12,27 +13,25 @@ export async function GET() {
     );
   }
 
-  // Total items
   const items = await supa!.from("kb_items").select("count", { count: "exact", head: true });
+  const emb   = await supa!.from("kb_embeddings").select("count", { count: "exact", head: true });
+  const chunks = await supa!.from("kb_chunks").select("count", { count: "exact", head: true });
 
-  // Total embeddings
-  const emb = await supa!.from("kb_embeddings").select("count", { count: "exact", head: true });
-
-  // Content mix
   const qaPairs = await supa!
     .from("kb_items")
     .select("count", { count: "exact", head: true })
-    .neq("a", ""); // a != '' → has an answer
+    .neq("a", "");
 
   const qOnly = await supa!
     .from("kb_items")
     .select("count", { count: "exact", head: true })
-    .eq("a", ""); // a == '' → Q-only
+    .eq("a", "");
 
   return NextResponse.json({
     ok: true,
     itemsCount: items.count ?? 0,
     embeddingsCount: emb.count ?? 0,
+    chunksCount: chunks.count ?? 0,
     qaPairsCount: qaPairs.count ?? 0,
     qOnlyCount: qOnly.count ?? 0,
   });
