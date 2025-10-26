@@ -26,7 +26,17 @@ type Toast = { id: string; type: "success" | "error" | "info"; msg: string };
 
 function Toasts({ toasts, remove }: { toasts: Toast[]; remove: (id: string) => void }) {
   return (
-    <div style={{ position: "fixed", right: 16, bottom: 16, display: "flex", flexDirection: "column", gap: 8, zIndex: 1000 }}>
+    <div
+      style={{
+        position: "fixed",
+        right: 16,
+        bottom: 16,
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+        zIndex: 1000,
+      }}
+    >
       {toasts.map((t) => (
         <div
           key={t.id}
@@ -103,9 +113,9 @@ export default function Page() {
       const data: StatsResponse = await res.json();
       setStats(data);
       setStatsUpdatedAt(new Date().toLocaleTimeString());
-      if (!data.ok && data.error) addToast("error", "Stats error: " + data.error);
+      if (!data.ok && data.error) addToast("error", `Stats error: ${data.error}`);
     } catch (e: any) {
-      addToast("error", "Stats fetch failed: " + (e?.message || e));
+      addToast("error", `Stats fetch failed: ${e?.message || e}`);
     } finally {
       setStatsLoading(false);
     }
@@ -113,22 +123,24 @@ export default function Page() {
 
   useEffect(() => { fetchStats(); }, []);
 
-  // Blob fallback for large files (413)
+  // —— Blob fallback for 413s ——
   async function uploadViaBlob(file: File) {
     try {
       setStage("processing");
       addToast("info", "Large file — using blob upload fallback…", 3000);
 
-      // stream file to /api/upload-url (proxy to Vercel Blob via put())
-      const upRes = await fetch("/api/upload-url", {
+      const upRes = await fetch("/api/upload-url", { method: "POST" });
+      const upData = await upRes.json();
+      if (!upData?.ok) throw new Error(upData?.error || "Failed to get upload URL");
+
+      const send = await fetch(upData.uploadUrl, {
         method: "POST",
-        headers: { "content-type": file.type || "application/octet-stream", "x-filename": file.name },
+        headers: { "content-type": file.type || "application/octet-stream" },
         body: file,
       });
-      const sent = await upRes.json();
-      if (!sent?.ok || !sent?.url) throw new Error(sent?.error || "Blob upload proxy failed");
+      const sent = await send.json();
+      if (!sent?.url) throw new Error("Blob upload failed");
 
-      // ask server to ingest from the blob url
       const ingestRes = await fetch("/api/ingest-blob", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -138,7 +150,7 @@ export default function Page() {
 
       if (!data?.ok) {
         setStage("error"); setPercent(0);
-        addToast("error", "Ingest failed: " + (data?.error || "unknown error"));
+        addToast("error", `Ingest failed: ${data?.error || "unknown error"}`);
         return;
       }
 
@@ -146,14 +158,14 @@ export default function Page() {
       setPercent(100);
       addToast(
         "success",
-        "Upload complete — Added " + (data.count ?? 0) +
-          " • Embedded " + (data.embedded ?? 0) +
-          (typeof data.chunked === "number" ? " • Chunks " + data.chunked : "")
+        `Upload complete — Added ${data.count ?? 0} • Embedded ${data.embedded ?? 0}${
+          typeof data.chunked === "number" ? ` • Chunks ${data.chunked}` : ""
+        }`
       );
       fetchStats();
     } catch (e: any) {
       setStage("error"); setPercent(0);
-      addToast("error", "Blob fallback failed: " + (e?.message || e));
+      addToast("error", `Blob fallback failed: ${e?.message || e}`);
     }
   }
 
@@ -166,14 +178,14 @@ export default function Page() {
 
     const mb = f.size / (1024 * 1024);
     if (mb > MAX_MB) {
-      addToast("error", "File too large (" + mb.toFixed(1) + " MB). Max " + MAX_MB + " MB in this build.");
+      addToast("error", `File too large (${mb.toFixed(1)} MB). Max ${MAX_MB} MB in this build.`);
       return;
     }
 
-    // allow-list
+    // robust ext/MIME allow-list
     const mime = (f.type || "").toLowerCase().trim();
     const ext = (f.name.split(".").pop() || "").toLowerCase().trim();
-    const allowedExts = new Set(["xlsx","xls","csv","pdf","docx","docm"]);
+    const allowedExts = new Set(["xlsx","xls","csv","pdf","docx"]);
     const allowedMimes = new Set([
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       "application/vnd.ms-excel",
@@ -183,7 +195,7 @@ export default function Page() {
       "application/msword",
     ]);
     const typeOk = allowedExts.has(ext) || allowedMimes.has(mime);
-    if (!typeOk) { addToast("error", "Unsupported file type: " + (mime || "." + ext || "unknown")); return; }
+    if (!typeOk) { addToast("error", `Unsupported file type: ${mime || "."+ext || "unknown"}`); return; }
 
     setFileName(f.name);
 
@@ -212,6 +224,7 @@ export default function Page() {
 
       if (!isJSON) {
         if (status === 413) {
+          // 🔁 Fallback to Blob transport
           xhrRef.current = null;
           uploadViaBlob(f);
           return;
@@ -220,7 +233,7 @@ export default function Page() {
         if (status === 415) snippet = "Unsupported media type. Try CSV/XLSX/PDF/DOCX.";
         if (status >= 500 && !snippet) snippet = "Server error while processing the file.";
         setStage("error"); setPercent(0); erroredRef.current = true;
-        addToast("error", "Upload failed (" + status + "). " + (snippet || "Non-JSON response"));
+        addToast("error", `Upload failed (${status}). ${snippet || "Non-JSON response"}`);
         xhrRef.current = null; return;
       }
 
@@ -228,20 +241,20 @@ export default function Page() {
         const data: IngestResponse = JSON.parse(xhr.responseText || "{}");
         if (!data.ok) {
           setStage("error"); setPercent(0); erroredRef.current = true;
-          addToast("error", "Ingest failed: " + (data.error || "unknown error"));
+          addToast("error", `Ingest failed: ${data.error || "unknown error"}`);
           return;
         }
         setStage("done"); setPercent(100);
         addToast(
           "success",
-          "Upload complete — Added " + (data.count ?? 0) +
-            " • Embedded " + (data.embedded ?? 0) +
-            (typeof data.chunked === "number" ? " • Chunks " + data.chunked : "")
+          `Upload complete — Added ${data.count ?? 0} • Embedded ${data.embedded ?? 0}${
+            typeof data.chunked === "number" ? ` • Chunks ${data.chunked}` : ""
+          }`
         );
         fetchStats();
       } catch (e: any) {
         setStage("error"); setPercent(0); erroredRef.current = true;
-        addToast("error", "Bad response: " + (e?.message || e));
+        addToast("error", `Bad response: ${e?.message || e}`);
       } finally {
         xhrRef.current = null;
       }
@@ -302,7 +315,7 @@ export default function Page() {
             <div>
               <div style={{ fontWeight: 700, fontSize: 16, color: "#111827" }}>Knowledge Base</div>
               <div style={{ fontSize: 12, color: "#6b7280" }}>
-                {statsLoading ? "Refreshing…" : stats?.ok ? "Updated " + (statsUpdatedAt || "now") : stats?.error ? "Error: " + stats.error : "—"}
+                {statsLoading ? "Refreshing…" : stats?.ok ? `Updated ${statsUpdatedAt || "now"}` : stats?.error ? `Error: ${stats.error}` : "—"}
               </div>
             </div>
           </div>
@@ -325,7 +338,14 @@ export default function Page() {
           </button>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 12, marginTop: 12 }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+            gap: 12,
+            marginTop: 12,
+          }}
+        >
           <div style={{ padding: 12, borderRadius: 10, background: "#fff", border: "1px solid #e5e7eb" }}>
             <div style={{ fontSize: 12, color: "#6b7280" }}>Items</div>
             <div style={{ fontSize: 20, fontWeight: 700, color: "#111827" }}>{nf.format(items)}</div>
@@ -337,14 +357,8 @@ export default function Page() {
           <div style={{ padding: 12, borderRadius: 10, background: "#fff", border: "1px solid #e5e7eb" }}>
             <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 6 }}>Content Mix</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-              <div>
-                <div style={{ fontSize: 11, color: "#6b7280" }}>Q&A pairs</div>
-                <div style={{ fontSize: 18, fontWeight: 700, color: "#111827" }}>{nf.format(qaPairs)}</div>
-              </div>
-              <div>
-                <div style={{ fontSize: 11, color: "#6b7280" }}>Q-only</div>
-                <div style={{ fontSize: 18, fontWeight: 700, color: "#111827" }}>{nf.format(qOnly)}</div>
-              </div>
+              <div><div style={{ fontSize: 11, color: "#6b7280" }}>Q&A pairs</div><div style={{ fontSize: 18, fontWeight: 700, color: "#111827" }}>{nf.format(qaPairs)}</div></div>
+              <div><div style={{ fontSize: 11, color: "#6b7280" }}>Q-only</div><div style={{ fontSize: 18, fontWeight: 700, color: "#111827" }}>{nf.format(qOnly)}</div></div>
             </div>
           </div>
           <div style={{ padding: 12, borderRadius: 10, background: "#fff", border: "1px solid #e5e7eb" }}>
@@ -355,16 +369,16 @@ export default function Page() {
       </section>
 
       <label style={{ display: "inline-block", margin: "12px 0" }}>
-        <input type="file" accept=".xlsx,.xls,.csv,.pdf,.docx,.docm" onChange={upload} style={{ display: "block", margin: "8px 0" }} />
+        <input type="file" accept=".xlsx,.xls,.csv,.pdf,.docx" onChange={upload} style={{ display: "block", margin: "8px 0" }} />
       </label>
 
       {stage !== "idle" && (
         <div style={{ marginTop: 8, width: 420, maxWidth: "100%" }}>
           <div style={{ fontSize: 13, color: "#374151", marginBottom: 8 }}>
-            {stage === "uploading" && "Uploading " + fileName + "…"}
-            {stage === "processing" && "Processing " + fileName + "…"}
-            {stage === "done" && "Done"}
-            {stage === "error" && "Error"}
+            {stage === "uploading" && `Uploading ${fileName}…`}
+            {stage === "processing" && `Processing ${fileName}…`}
+            {stage === "done" && `Done`}
+            {stage === "error" && `Error`}
           </div>
           <div
             style={{
@@ -380,7 +394,7 @@ export default function Page() {
             <div
               style={{
                 height: "100%",
-                width: percent + "%",
+                width: `${percent}%`,
                 background: stage === "error" ? "#ef4444" : stage === "done" ? "#10b981" : "#0ea5e9",
                 transition: "width 120ms linear",
               }}
