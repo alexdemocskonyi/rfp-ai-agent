@@ -8,7 +8,7 @@
     "start": "next start"
   },
   "dependencies": {
-    "@cedrugs/pdf-parse": "^1.1.1",
+    "@cedrugs/pdf-parse": "^1.0.0",
     "@supabase/supabase-js": "^2.45.4",
     "@vercel/blob": "^0.23.0",
     "jszip": "^3.10.1",
@@ -25,5 +25,9 @@
     "@types/react": "^18.2.66",
     "@types/react-dom": "^18.2.22",
     "typescript": "^5.5.4"
+  },
+  "overrides": {
+    "react": "18.2.0",
+    "react-dom": "18.2.0"
   }
 }
