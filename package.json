@@ -17,14 +17,12 @@
     "openai": "^4.57.0",
     "react": "18.2.0",
     "react-dom": "18.2.0",
-    "uuid": "^9.0.1",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@types/node": "^20.12.7",
     "@types/react": "^18.2.66",
     "@types/react-dom": "^18.2.22",
-    "@types/uuid": "^10.0.0",
     "typescript": "^5.5.4"
   },
   "overrides": {
