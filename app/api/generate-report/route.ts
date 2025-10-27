@@ -77,7 +77,7 @@ export async function POST(req: Request) {
         children: [
           new docx.Paragraph({ text: `RFP Report for ${filename}`, heading: docx.HeadingLevel.HEADING_1 }),
           ...answers.flatMap(a => [
-            new docx.Paragraph({ text: `Q: ${a.q}`, bold: true }),
+            new docx.Paragraph({ children: [ new docx.TextRun({ text: `Q: ${a.q}`, bold: true }) ] }),
             new docx.Paragraph({ text: `A: ${a.a}` }),
             new docx.Paragraph({ text: `Source: ${a.src}`, spacing: { after: 200 } }),
           ]),
