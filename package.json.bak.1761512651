@@ -1,0 +1,35 @@
+{
+  "name": "rfp-ai-local",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint"
+  },
+  "dependencies": {
+    "@cedrugs/pdf-parse": "^1.0.0",
+    "@supabase/supabase-js": "^2.76.1",
+    "@vercel/blob": "^2.0.0",
+    "jszip": "^3.10.1",
+    "mammoth": "^1.11.0",
+    "next": "16.0.0",
+    "openai": "^6.7.0",
+    "pdf-parse": "^2.4.5",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "uuid": "^13.0.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.0.0",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
+}
