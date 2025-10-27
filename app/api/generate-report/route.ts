@@ -86,7 +86,7 @@ export async function POST(req: Request) {
     });
 
     const buffer = await docx.Packer.toBuffer(doc);
-    return new Response(buffer, {
+    return new Response(new Uint8Array(buffer), {
       status: 200,
       headers: {
         "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
