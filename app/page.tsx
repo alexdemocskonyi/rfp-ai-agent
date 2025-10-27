@@ -2,6 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import dynamic from "next/dynamic";
+const ChatLite = dynamic(() => import("../components/ChatLite"), { ssr: false });
+const DocGenLite = dynamic(() => import("../components/DocGenLite"), { ssr: false });
 type IngestResponse = {
   ok: boolean;
   batchId?: string;
@@ -70,6 +73,8 @@ export default function Page() {
   const erroredRef = useRef<boolean>(false);
 
   const MAX_MB = Number(process.env.NEXT_PUBLIC_MAX_UPLOAD_MB || 10);
+  // If set, we’ll try Blob proxy only up to this size, then skip straight to Supabase direct upload.
+  const BLOB_SAFE_MB = Number(process.env.NEXT_PUBLIC_BLOB_SAFE_MB || 4);
 
   function addToast(type: Toast["type"], msg: string, ttl = 5000) {
     const id = crypto.randomUUID();
@@ -92,7 +97,9 @@ export default function Page() {
   }
 
   function abortInFlight() {
-    try { xhrRef.current?.abort(); } catch {}
+    try {
+      xhrRef.current?.abort();
+    } catch {}
     xhrRef.current = null;
   }
 
@@ -111,24 +118,89 @@ export default function Page() {
     }
   }
 
-  useEffect(() => { fetchStats(); }, []);
+  useEffect(() => {
+    fetchStats();
+  }, []);
 
-  // Blob fallback for large files (413)
+  // ----- helpers -------------------------------------------------------------
+
+  async function ingestViaUrl(url: string, name?: string) {
+    try {
+      const res = await fetch("/api/ingest-url", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url, name }),
+      });
+      const data = (await res.json()) as IngestResponse;
+      if (!data?.ok) throw new Error(data?.error || "ingest-url failed");
+      setStage("done");
+      setPercent(100);
+      addToast(
+        "success",
+        "Upload complete — Added " +
+          (data.count ?? 0) +
+          " • Embedded " +
+          (data.embedded ?? 0) +
+          (typeof data.chunked === "number" ? " • Chunks " + data.chunked : "")
+      );
+      fetchStats();
+    } catch (e: any) {
+      setStage("error");
+      setPercent(0);
+      addToast("error", "URL ingest failed: " + (e?.message || e));
+    }
+  }
+
+  async function supabaseUpload(file: File) {
+    const url = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim();
+    const anon = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "").trim();
+    if (!url || !anon) throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY");
+
+    const { createClient } = await import("@supabase/supabase-js");
+    const supabase = createClient(url, anon);
+
+    const path = `uploads/${Date.now()}-${Math.random().toString(36).slice(2)}-${file.name}`;
+    const { error } = await supabase.storage
+      .from("ingest")
+      .upload(path, file, { contentType: file.type || "application/octet-stream", upsert: true });
+    if (error) throw error;
+
+    const pub = supabase.storage.from("ingest").getPublicUrl(path);
+    const publicUrl = pub.data?.publicUrl;
+    if (!publicUrl) throw new Error("Could not create public URL");
+
+    return { path, publicUrl };
+  }
+
   async function uploadViaBlob(file: File) {
+    // If file is definitely above the Blob-safe threshold, skip Blob and go straight to Supabase.
+    const mb = file.size / (1024 * 1024);
+    if (mb > BLOB_SAFE_MB) {
+      addToast("info", `Large file (${mb.toFixed(1)} MB) — uploading direct to Supabase…`, 3000);
+      return uploadViaSupabase(file);
+    }
+
     try {
       setStage("processing");
       addToast("info", "Large file — using blob upload fallback…", 3000);
 
-      // stream file to /api/upload-url (proxy to Vercel Blob via put())
       const upRes = await fetch("/api/upload-url", {
         method: "POST",
         headers: { "content-type": file.type || "application/octet-stream", "x-filename": file.name },
         body: file,
       });
+
+      // Guard: Vercel Blob sometimes returns HTML/text on failure
+      const upCT = upRes.headers.get("content-type") || "";
+      if (!upCT.includes("application/json")) {
+        const txt = (await upRes.text()).slice(0, 180).replace(/\s+/g, " ");
+        throw new Error(`Upload proxy returned non-JSON (${upRes.status}) — likely 413 from the platform. ${txt}`);
+      }
+
       const sent = await upRes.json();
       if (!sent?.ok || !sent?.url) throw new Error(sent?.error || "Blob upload proxy failed");
 
-      // ask server to ingest from the blob url
+      // Ingest from the blob url
       const ingestRes = await fetch("/api/ingest-blob", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -137,7 +209,8 @@ export default function Page() {
       const data: IngestResponse = await ingestRes.json();
 
       if (!data?.ok) {
-        setStage("error"); setPercent(0);
+        setStage("error");
+        setPercent(0);
         addToast("error", "Ingest failed: " + (data?.error || "unknown error"));
         return;
       }
@@ -146,16 +219,47 @@ export default function Page() {
       setPercent(100);
       addToast(
         "success",
-        "Upload complete — Added " + (data.count ?? 0) +
-          " • Embedded " + (data.embedded ?? 0) +
+        "Upload complete — Added " +
+          (data.count ?? 0) +
+          " • Embedded " +
+          (data.embedded ?? 0) +
           (typeof data.chunked === "number" ? " • Chunks " + data.chunked : "")
       );
       fetchStats();
     } catch (e: any) {
-      setStage("error"); setPercent(0);
-      addToast("error", "Blob fallback failed: " + (e?.message || e));
+      addToast("info", "Blob proxy failed — trying Supabase Storage…", 3000);
+      return uploadViaSupabase(file, e?.message);
     }
   }
+
+  async function uploadViaSupabase(file: File, previousErrorMsg?: string) {
+    try {
+      setStage("processing");
+      const mb = file.size / (1024 * 1024);
+      addToast("info", `Large file (${mb.toFixed(1)} MB) — uploading direct to Supabase…`, 3500);
+
+      const { publicUrl } = await supabaseUpload(file);
+      await ingestViaUrl(publicUrl, file.name);
+    } catch (e: any) {
+      setStage("error");
+      setPercent(0);
+      addToast(
+        "error",
+        `Supabase upload failed: ${e?.message || e}${
+          previousErrorMsg ? ` (blob error was: ${previousErrorMsg})` : ""
+        }`
+      );
+
+      // Last-resort manual URL path
+      const u = window.prompt("Upload failed. Paste a direct download URL to the same file:");
+      if (u && /^https?:\/\//i.test(u.trim())) {
+        addToast("info", "Trying server-side ingest by URL…", 2500);
+        await ingestViaUrl(u.trim(), file.name);
+      }
+    }
+  }
+
+  // ----- main upload ---------------------------------------------------------
 
   async function upload(ev: React.ChangeEvent<HTMLInputElement>) {
     const f = ev.target.files?.[0];
@@ -173,7 +277,7 @@ export default function Page() {
     // allow-list
     const mime = (f.type || "").toLowerCase().trim();
     const ext = (f.name.split(".").pop() || "").toLowerCase().trim();
-    const allowedExts = new Set(["xlsx","xls","csv","pdf","docx","docm"]);
+    const allowedExts = new Set(["xlsx", "xls", "csv", "pdf", "docx", "docm"]);
     const allowedMimes = new Set([
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       "application/vnd.ms-excel",
@@ -183,9 +287,15 @@ export default function Page() {
       "application/msword",
     ]);
     const typeOk = allowedExts.has(ext) || allowedMimes.has(mime);
-    if (!typeOk) { addToast("error", "Unsupported file type: " + (mime || "." + ext || "unknown")); return; }
+    if (!typeOk) {
+      addToast("error", "Unsupported file type: " + (mime || "." + ext || "unknown"));
+      return;
+    }
 
     setFileName(f.name);
+
+    // If it’s clearly above the Blob-safe threshold, skip straight to Supabase upload
+    if (mb > BLOB_SAFE_MB) return uploadViaSupabase(f);
 
     const fd = new FormData();
     fd.append("files", f);
@@ -197,14 +307,18 @@ export default function Page() {
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) {
         const p = Math.max(1, Math.min(100, Math.round((e.loaded / e.total) * 70)));
-        setStage("uploading"); setPercent(p);
+        setStage("uploading");
+        setPercent(p);
       }
     };
 
     xhr.onreadystatechange = () => {
       if (xhr.readyState !== 4) return;
 
-      if (processingTimer.current) { window.clearInterval(processingTimer.current); processingTimer.current = null; }
+      if (processingTimer.current) {
+        window.clearInterval(processingTimer.current);
+        processingTimer.current = null;
+      }
 
       const status = xhr.status;
       const ct = xhr.getResponseHeader("content-type") || "";
@@ -219,28 +333,38 @@ export default function Page() {
         let snippet = (xhr.responseText || "").slice(0, 160).replace(/\s+/g, " ").trim();
         if (status === 415) snippet = "Unsupported media type. Try CSV/XLSX/PDF/DOCX.";
         if (status >= 500 && !snippet) snippet = "Server error while processing the file.";
-        setStage("error"); setPercent(0); erroredRef.current = true;
+        setStage("error");
+        setPercent(0);
+        erroredRef.current = true;
         addToast("error", "Upload failed (" + status + "). " + (snippet || "Non-JSON response"));
-        xhrRef.current = null; return;
+        xhrRef.current = null;
+        return;
       }
 
       try {
         const data: IngestResponse = JSON.parse(xhr.responseText || "{}");
         if (!data.ok) {
-          setStage("error"); setPercent(0); erroredRef.current = true;
+          setStage("error");
+          setPercent(0);
+          erroredRef.current = true;
           addToast("error", "Ingest failed: " + (data.error || "unknown error"));
           return;
         }
-        setStage("done"); setPercent(100);
+        setStage("done");
+        setPercent(100);
         addToast(
           "success",
-          "Upload complete — Added " + (data.count ?? 0) +
-            " • Embedded " + (data.embedded ?? 0) +
+          "Upload complete — Added " +
+            (data.count ?? 0) +
+            " • Embedded " +
+            (data.embedded ?? 0) +
             (typeof data.chunked === "number" ? " • Chunks " + data.chunked : "")
         );
         fetchStats();
       } catch (e: any) {
-        setStage("error"); setPercent(0); erroredRef.current = true;
+        setStage("error");
+        setPercent(0);
+        erroredRef.current = true;
         addToast("error", "Bad response: " + (e?.message || e));
       } finally {
         xhrRef.current = null;
@@ -248,8 +372,13 @@ export default function Page() {
     };
 
     xhr.onerror = () => {
-      if (processingTimer.current) { window.clearInterval(processingTimer.current); processingTimer.current = null; }
-      setStage("error"); setPercent(0); erroredRef.current = true;
+      if (processingTimer.current) {
+        window.clearInterval(processingTimer.current);
+        processingTimer.current = null;
+      }
+      setStage("error");
+      setPercent(0);
+      erroredRef.current = true;
       addToast("error", "Network error during upload");
       xhrRef.current = null;
     };
@@ -391,6 +520,24 @@ export default function Page() {
       )}
 
       <Toasts toasts={toasts} remove={removeToast} />
-    </main>
+    
+      <hr style={{ margin: "24px 0", border: "0", height: 1, background: "#e5e7eb" }} />
+
+      <section style={{ marginTop: 8, maxWidth: 900 }}>
+        <details open style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, background: "#fff", marginBottom: 12 }}>
+          <summary style={{ cursor: "pointer", fontWeight: 700, fontSize: 16 }}>💬 Assistant (beta)</summary>
+          <div style={{ marginTop: 12 }}>
+            <ChatLite />
+          </div>
+        </details>
+
+        <details open style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, background: "#fff" }}>
+          <summary style={{ cursor: "pointer", fontWeight: 700, fontSize: 16 }}>📝 Document Generator (beta)</summary>
+          <div style={{ marginTop: 12 }}>
+            <DocGenLite />
+          </div>
+        </details>
+      </section>
+</main>
   );
 }
