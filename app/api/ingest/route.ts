@@ -6,6 +6,7 @@ import { QAItem } from "@/lib/kb";
 import { embedBatch } from "@/lib/embed";
 import { saveItemsToSupabase, saveChunksToSupabase, ChunkRow } from "@/lib/db";
 import { makeChunks } from "@/lib/chunker";
+import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -120,13 +121,11 @@ export async function POST(req: Request) {
         let text = "";
         try {
           if (!looksZip(buf)) throw new Error("not-a-zip");
-          // primary: mammoth
           const mammoth: any = await import("mammoth");
           const { value } = await mammoth.extractRawText({ buffer: buf });
           text = String(value || "").trim();
           if (!text) throw new Error("empty-doc");
         } catch {
-          // fallback: unzip + pull XML text
           try {
             text = await extractDocxWithZip(buf);
           } catch (err: any) {
@@ -185,6 +184,20 @@ export async function POST(req: Request) {
 
     // 3) Auto-embed questions
     const embedOut = await embedBatch(batchId);
+
+    // 4) Refresh vector materialized view automatically
+    try {
+      const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+      const SUPABASE_KEY =
+        process.env.SUPABASE_SERVICE_ROLE_KEY ||
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+      const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+      await supabase.rpc("refresh_kb_items_vec");
+      console.log("✅ Materialized view refreshed after ingestion");
+    } catch (err) {
+      console.error("⚠️ Could not refresh materialized view:", err);
+    }
 
     return NextResponse.json({
       ok: true,

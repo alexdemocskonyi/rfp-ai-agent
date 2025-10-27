@@ -4,12 +4,43 @@ import { useState } from "react";
 
 type Msg = { role: "user" | "assistant"; content: string };
 
+type Trio =
+  | {
+      contextual?: { text?: string; sourceHint?: string };
+      raw?: { text?: string; sourceHint?: string };
+      ai?: { text?: string; sourceHint?: string };
+    }
+  | undefined;
+
 export default function ChatLite() {
   const [messages, setMessages] = useState<Msg[]>([
-    { role: "assistant", content: "Hi! I’m your KB expert. Ask about policy, upload gaps, or draft answers." } satisfies Msg,
+    {
+      role: "assistant" as const,
+      content:
+        "Hi! I’m your KB expert. Ask about policy, upload gaps, or draft answers.",
+    },
   ]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+
+  function formatTrio(trio: Trio): string | null {
+    if (!trio) return null;
+
+    const parts: string[] = [];
+
+    const push = (label: string, text?: string, hint?: string) => {
+      if (!text) return;
+      parts.push(
+        `[${label}]\n${text.trim()}${hint ? `\n\n(Source: ${hint})` : ""}`
+      );
+    };
+
+    push("Contextual", trio.contextual?.text, trio.contextual?.sourceHint);
+    push("Raw", trio.raw?.text, trio.raw?.sourceHint);
+    push("AI", trio.ai?.text, trio.ai?.sourceHint);
+
+    return parts.length ? parts.join("\n\n— — —\n\n") : null;
+  }
 
   async function send() {
     const text = input.trim();
@@ -17,7 +48,6 @@ export default function ChatLite() {
 
     setInput("");
 
-    // Ensure `role` stays a string literal type (not widened to string)
     const next: Msg[] = [...messages, { role: "user" as const, content: text }];
     setMessages(next);
     setBusy(true);
@@ -28,54 +58,100 @@ export default function ChatLite() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ messages: next }),
       });
-      const data = await res.json();
-      if (!data?.ok) throw new Error(data?.error || "Chat failed");
-      setMessages([...next, { role: "assistant" as const, content: data.message }]);
+      const js = await res.json();
+
+      // Support both the new multi-answer shape and the old single "message" shape.
+      const trio: Trio =
+        js?.answers ??
+        (js?.ai || js?.raw || js?.contextual
+          ? {
+              ai: js.ai,
+              raw: js.raw,
+              contextual: js.contextual,
+            }
+          : undefined);
+
+      const trioText = formatTrio(trio);
+
+      const content =
+        trioText ??
+        String(
+          js?.message ||
+            "No answer. (The API did not return contextual/raw/AI fields.)"
+        );
+
+      setMessages((m) => [
+        ...m,
+        { role: "assistant" as const, content },
+      ]);
     } catch (e: any) {
-      setMessages([...next, { role: "assistant" as const, content: "Error: " + (e?.message || e) }]);
+      setMessages((m) => [
+        ...m,
+        { role: "assistant" as const, content: "Error: " + (e?.message || e) },
+      ]);
     } finally {
       setBusy(false);
     }
   }
 
+  function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    // Enter = send, Shift+Enter = newline
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      send();
+    }
+  }
+
   return (
-    <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, background: "#fff" }}>
-      <div style={{ maxHeight: 260, overflowY: "auto", display: "grid", gap: 8, marginBottom: 10 }}>
+    <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 12 }}>
+      <div
+        style={{
+          height: 240,
+          overflow: "auto",
+          padding: 10,
+          background: "#f9fafb",
+          borderRadius: 8,
+          border: "1px solid #e5e7eb",
+          marginBottom: 10,
+          whiteSpace: "pre-wrap",
+          fontFamily: "system-ui, -apple-system, Segoe UI, Roboto",
+          fontSize: 14,
+          color: "#111827",
+        }}
+      >
         {messages.map((m, i) => (
-          <div
-            key={i}
-            style={{
-              padding: "8px 10px",
-              borderRadius: 10,
-              background: m.role === "assistant" ? "#f8fafc" : "#e0f2fe",
-              whiteSpace: "pre-wrap",
-              lineHeight: 1.35,
-              fontSize: 14,
-            }}
-          >
-            <strong style={{ color: "#111827" }}>{m.role === "assistant" ? "Assistant" : "You"}:</strong>{" "}
+          <div key={i} style={{ marginBottom: 10 }}>
+            <strong>{m.role === "user" ? "You" : "Assistant"}:</strong>{" "}
             {m.content}
           </div>
         ))}
       </div>
+
       <div style={{ display: "flex", gap: 8 }}>
         <textarea
           value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Ask about KB content, maintenance, or draft wording…"
           rows={2}
-          style={{ flex: 1, border: "1px solid #e5e7eb", borderRadius: 8, padding: 8, fontSize: 14 }}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={onKeyDown}
+          disabled={busy}
+          placeholder="Ask about KB content, maintenance, or draft wording… (Enter to send, Shift+Enter for newline)"
+          style={{
+            flex: 1,
+            border: "1px solid #e5e7eb",
+            borderRadius: 8,
+            padding: "10px 12px",
+            resize: "vertical",
+          }}
         />
         <button
           onClick={send}
-          disabled={busy || !input.trim()}
+          disabled={busy}
           style={{
-            minWidth: 90,
-            border: "1px solid #e5e7eb",
+            minWidth: 80,
+            border: "1px solid #0ea5e9",
+            background: busy ? "#93c5fd" : "#0ea5e9",
+            color: "#fff",
             borderRadius: 8,
-            background: busy ? "#f3f4f6" : "#0ea5e9",
-            color: busy ? "#6b7280" : "#fff",
-            cursor: busy ? "not-allowed" : "pointer",
             fontWeight: 600,
           }}
         >
