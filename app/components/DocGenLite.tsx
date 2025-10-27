@@ -11,10 +11,9 @@ export default function DocGenLite({ selectedFile }: { selectedFile: File | null
     try {
       setMsg("");
       if (!selectedFile) {
-        setMsg("Please upload a file first at the top of the page.");
+        setMsg("Please choose a file at the top first. (That same file will be used for report generation.)");
         return;
       }
-
       setBusy(true);
       setMsg("Generating report…");
 
@@ -33,22 +32,25 @@ export default function DocGenLite({ selectedFile }: { selectedFile: File | null
       }
 
       if (!ct.includes("application/vnd.openxmlformats-officedocument.wordprocessingml.document")) {
+        // If server returned JSON instead of a file, show it.
         const text = await res.text();
+        setBusy(false);
         setMsg(text || "Unexpected response content type.");
         return;
       }
 
       const blob = await res.blob();
+      const dlName = filename || "RFP_Report_Output.docx";
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = filename || "RFP_Report_Output.docx";
+      a.download = dlName;
       document.body.appendChild(a);
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
 
-      setMsg("Report downloaded successfully.");
+      setMsg("Report downloaded.");
     } catch (e: any) {
       setMsg(e?.message || String(e));
     } finally {
@@ -58,27 +60,32 @@ export default function DocGenLite({ selectedFile }: { selectedFile: File | null
 
   return (
     <div style={{ display: "grid", gap: 12 }}>
-      <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+      <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <div style={{ fontSize: 13, color: "#374151" }}>
+          <b>Selected file:</b> {selectedFile ? selectedFile.name : "— (use the top uploader)"}
+        </div>
         <input
           type="text"
           value={filename}
           onChange={(e) => setFilename(e.target.value)}
           placeholder="Output filename"
           style={{ padding: "6px 8px", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 13 }}
+          aria-label="Output filename"
         />
         <button
           onClick={onGenerate}
-          disabled={busy}
+          disabled={busy || !selectedFile}
           style={{
             padding: "8px 12px",
             borderRadius: 8,
             border: "1px solid #e5e7eb",
-            background: busy ? "#f3f4f6" : "#0ea5e9",
-            color: "#fff",
-            cursor: busy ? "not-allowed" : "pointer",
+            background: busy || !selectedFile ? "#f3f4f6" : "#0ea5e9",
+            color: busy || !selectedFile ? "#6b7280" : "#fff",
+            cursor: busy || !selectedFile ? "not-allowed" : "pointer",
             fontSize: 14,
             fontWeight: 600,
           }}
+          aria-busy={busy}
         >
           {busy ? "Working…" : "Generate RFP Report"}
         </button>

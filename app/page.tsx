@@ -1,10 +1,12 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-
 import dynamic from "next/dynamic";
-const ChatLite = dynamic(() => import("../components/ChatLite"), { ssr: false });
-const DocGenLite = dynamic(() => import("../components/DocGenLite"), { ssr: false });
+
+// Mount the beta UI blocks (no impact on existing flows)
+const ChatLite = dynamic(() => import("./components/ChatLite"), { ssr: false });
+const DocGenLite = dynamic(() => import("./components/DocGenLite"), { ssr: false });
+
 type IngestResponse = {
   ok: boolean;
   batchId?: string;
@@ -61,9 +63,12 @@ const nf = new Intl.NumberFormat();
 
 export default function Page() {
   const [fileName, setFileName] = useState<string>("");
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+
   const [stage, setStage] = useState<"idle" | "uploading" | "processing" | "done" | "error">("idle");
   const [percent, setPercent] = useState<number>(0);
   const [toasts, setToasts] = useState<Toast[]>([]);
+
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [statsLoading, setStatsLoading] = useState<boolean>(false);
   const [statsUpdatedAt, setStatsUpdatedAt] = useState<string>("");
@@ -72,9 +77,7 @@ export default function Page() {
   const xhrRef = useRef<XMLHttpRequest | null>(null);
   const erroredRef = useRef<boolean>(false);
 
-  const MAX_MB = Number(process.env.NEXT_PUBLIC_MAX_UPLOAD_MB || 10);
-  // If set, we’ll try Blob proxy only up to this size, then skip straight to Supabase direct upload.
-  const BLOB_SAFE_MB = Number(process.env.NEXT_PUBLIC_BLOB_SAFE_MB || 4);
+  const MAX_MB = Number(process.env.NEXT_PUBLIC_MAX_UPLOAD_MB || 1024); // effectively no limit here
 
   function addToast(type: Toast["type"], msg: string, ttl = 5000) {
     const id = crypto.randomUUID();
@@ -122,7 +125,7 @@ export default function Page() {
     fetchStats();
   }, []);
 
-  // ----- helpers -------------------------------------------------------------
+  // ---------- Upload helpers ----------
 
   async function ingestViaUrl(url: string, name?: string) {
     try {
@@ -137,11 +140,9 @@ export default function Page() {
       setPercent(100);
       addToast(
         "success",
-        "Upload complete — Added " +
-          (data.count ?? 0) +
-          " • Embedded " +
-          (data.embedded ?? 0) +
-          (typeof data.chunked === "number" ? " • Chunks " + data.chunked : "")
+        `Upload complete — Added ${data.count ?? 0} • Embedded ${data.embedded ?? 0}${
+          typeof data.chunked === "number" ? " • Chunks " + data.chunked : ""
+        }`
       );
       fetchStats();
     } catch (e: any) {
@@ -172,71 +173,11 @@ export default function Page() {
     return { path, publicUrl };
   }
 
-  async function uploadViaBlob(file: File) {
-    // If file is definitely above the Blob-safe threshold, skip Blob and go straight to Supabase.
-    const mb = file.size / (1024 * 1024);
-    if (mb > BLOB_SAFE_MB) {
-      addToast("info", `Large file (${mb.toFixed(1)} MB) — uploading direct to Supabase…`, 3000);
-      return uploadViaSupabase(file);
-    }
-
-    try {
-      setStage("processing");
-      addToast("info", "Large file — using blob upload fallback…", 3000);
-
-      const upRes = await fetch("/api/upload-url", {
-        method: "POST",
-        headers: { "content-type": file.type || "application/octet-stream", "x-filename": file.name },
-        body: file,
-      });
-
-      // Guard: Vercel Blob sometimes returns HTML/text on failure
-      const upCT = upRes.headers.get("content-type") || "";
-      if (!upCT.includes("application/json")) {
-        const txt = (await upRes.text()).slice(0, 180).replace(/\s+/g, " ");
-        throw new Error(`Upload proxy returned non-JSON (${upRes.status}) — likely 413 from the platform. ${txt}`);
-      }
-
-      const sent = await upRes.json();
-      if (!sent?.ok || !sent?.url) throw new Error(sent?.error || "Blob upload proxy failed");
-
-      // Ingest from the blob url
-      const ingestRes = await fetch("/api/ingest-blob", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ url: sent.url, name: file.name }),
-      });
-      const data: IngestResponse = await ingestRes.json();
-
-      if (!data?.ok) {
-        setStage("error");
-        setPercent(0);
-        addToast("error", "Ingest failed: " + (data?.error || "unknown error"));
-        return;
-      }
-
-      setStage("done");
-      setPercent(100);
-      addToast(
-        "success",
-        "Upload complete — Added " +
-          (data.count ?? 0) +
-          " • Embedded " +
-          (data.embedded ?? 0) +
-          (typeof data.chunked === "number" ? " • Chunks " + data.chunked : "")
-      );
-      fetchStats();
-    } catch (e: any) {
-      addToast("info", "Blob proxy failed — trying Supabase Storage…", 3000);
-      return uploadViaSupabase(file, e?.message);
-    }
-  }
-
   async function uploadViaSupabase(file: File, previousErrorMsg?: string) {
     try {
       setStage("processing");
       const mb = file.size / (1024 * 1024);
-      addToast("info", `Large file (${mb.toFixed(1)} MB) — uploading direct to Supabase…`, 3500);
+      addToast("info", `Uploading direct to Supabase… (${mb.toFixed(1)} MB)`, 3500);
 
       const { publicUrl } = await supabaseUpload(file);
       await ingestViaUrl(publicUrl, file.name);
@@ -245,12 +186,9 @@ export default function Page() {
       setPercent(0);
       addToast(
         "error",
-        `Supabase upload failed: ${e?.message || e}${
-          previousErrorMsg ? ` (blob error was: ${previousErrorMsg})` : ""
-        }`
+        `Supabase upload failed: ${e?.message || e}${previousErrorMsg ? ` (fallback reason: ${previousErrorMsg})` : ""}`
       );
 
-      // Last-resort manual URL path
       const u = window.prompt("Upload failed. Paste a direct download URL to the same file:");
       if (u && /^https?:\/\//i.test(u.trim())) {
         addToast("info", "Trying server-side ingest by URL…", 2500);
@@ -259,8 +197,7 @@ export default function Page() {
     }
   }
 
-  // ----- main upload ---------------------------------------------------------
-
+  // ---------- Main upload (single top button) ----------
   async function upload(ev: React.ChangeEvent<HTMLInputElement>) {
     const f = ev.target.files?.[0];
 
@@ -268,13 +205,14 @@ export default function Page() {
     resetUI();
     if (!f) return;
 
+    setSelectedFile(f);
+
     const mb = f.size / (1024 * 1024);
     if (mb > MAX_MB) {
-      addToast("error", "File too large (" + mb.toFixed(1) + " MB). Max " + MAX_MB + " MB in this build.");
+      addToast("error", "File too large (" + mb.toFixed(1) + " MB).");
       return;
     }
 
-    // allow-list
     const mime = (f.type || "").toLowerCase().trim();
     const ext = (f.name.split(".").pop() || "").toLowerCase().trim();
     const allowedExts = new Set(["xlsx", "xls", "csv", "pdf", "docx", "docm"]);
@@ -294,9 +232,7 @@ export default function Page() {
 
     setFileName(f.name);
 
-    // If it’s clearly above the Blob-safe threshold, skip straight to Supabase upload
-    if (mb > BLOB_SAFE_MB) return uploadViaSupabase(f);
-
+    // Always try server ingest first with progress.
     const fd = new FormData();
     fd.append("files", f);
 
@@ -324,12 +260,15 @@ export default function Page() {
       const ct = xhr.getResponseHeader("content-type") || "";
       const isJSON = ct.includes("application/json");
 
+      // If the platform says body too large, fall back to Supabase without any size gate.
+      if (status === 413) {
+        xhrRef.current = null;
+        addToast("info", "Server rejected large body — switching to Supabase upload…", 3500);
+        uploadViaSupabase(f, "HTTP 413 from /api/ingest");
+        return;
+      }
+
       if (!isJSON) {
-        if (status === 413) {
-          xhrRef.current = null;
-          uploadViaBlob(f);
-          return;
-        }
         let snippet = (xhr.responseText || "").slice(0, 160).replace(/\s+/g, " ").trim();
         if (status === 415) snippet = "Unsupported media type. Try CSV/XLSX/PDF/DOCX.";
         if (status >= 500 && !snippet) snippet = "Server error while processing the file.";
@@ -397,13 +336,6 @@ export default function Page() {
     };
   }
 
-  useEffect(() => {
-    return () => {
-      abortInFlight();
-      if (processingTimer.current) window.clearInterval(processingTimer.current);
-    };
-  }, []);
-
   const items = stats?.itemsCount ?? 0;
   const embeddings = stats?.embeddingsCount ?? 0;
   const chunks = stats?.chunksCount ?? 0;
@@ -414,6 +346,7 @@ export default function Page() {
     <main style={{ padding: 24, fontFamily: "system-ui, -apple-system, Segoe UI, Roboto" }}>
       <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 12 }}>🧠 RFP AI</h1>
 
+      {/* Upload + Stats */}
       <section
         style={{
           marginBottom: 16,
@@ -481,50 +414,59 @@ export default function Page() {
             <div style={{ fontSize: 20, fontWeight: 700, color: "#111827" }}>{nf.format(chunks)}</div>
           </div>
         </div>
-      </section>
 
-      <label style={{ display: "inline-block", margin: "12px 0" }}>
-        <input type="file" accept=".xlsx,.xls,.csv,.pdf,.docx,.docm" onChange={upload} style={{ display: "block", margin: "8px 0" }} />
-      </label>
+        <label style={{ display: "inline-block", marginTop: 12 }}>
+          <input
+            type="file"
+            accept=".xlsx,.xls,.csv,.pdf,.docx,.docm"
+            onChange={upload}
+            style={{ display: "block", margin: "8px 0" }}
+          />
+        </label>
 
-      {stage !== "idle" && (
-        <div style={{ marginTop: 8, width: 420, maxWidth: "100%" }}>
-          <div style={{ fontSize: 13, color: "#374151", marginBottom: 8 }}>
-            {stage === "uploading" && "Uploading " + fileName + "…"}
-            {stage === "processing" && "Processing " + fileName + "…"}
-            {stage === "done" && "Done"}
-            {stage === "error" && "Error"}
-          </div>
-          <div
-            style={{
-              height: 10,
-              width: "100%",
-              background: "#e5e7eb",
-              borderRadius: 999,
-              overflow: "hidden",
-              boxShadow: "inset 0 1px 2px rgba(0,0,0,.06)",
-            }}
-            aria-label="progress"
-          >
+        {stage !== "idle" && (
+          <div style={{ marginTop: 8, width: 420, maxWidth: "100%" }}>
+            <div style={{ fontSize: 13, color: "#374151", marginBottom: 8 }}>
+              {stage === "uploading" && "Uploading " + fileName + "…"}
+              {stage === "processing" && "Processing " + fileName + "…"}
+              {stage === "done" && "Done"}
+              {stage === "error" && "Error"}
+            </div>
             <div
               style={{
-                height: "100%",
-                width: percent + "%",
-                background: stage === "error" ? "#ef4444" : stage === "done" ? "#10b981" : "#0ea5e9",
-                transition: "width 120ms linear",
+                height: 10,
+                width: "100%",
+                background: "#e5e7eb",
+                borderRadius: 999,
+                overflow: "hidden",
+                boxShadow: "inset 0 1px 2px rgba(0,0,0,.06)",
               }}
-            />
+              aria-label="progress"
+            >
+              <div
+                style={{
+                  height: "100%",
+                  width: percent + "%",
+                  background: stage === "error" ? "#ef4444" : stage === "done" ? "#10b981" : "#0ea5e9",
+                  transition: "width 120ms linear",
+                }}
+              />
+            </div>
+            <div style={{ fontSize: 12, color: "#6b7280", marginTop: 6 }}>{percent}%</div>
           </div>
-          <div style={{ fontSize: 12, color: "#6b7280", marginTop: 6 }}>{percent}%</div>
-        </div>
-      )}
+        )}
+      </section>
 
       <Toasts toasts={toasts} remove={removeToast} />
-    
+
       <hr style={{ margin: "24px 0", border: "0", height: 1, background: "#e5e7eb" }} />
 
+      {/* Assistant + Generator */}
       <section style={{ marginTop: 8, maxWidth: 900 }}>
-        <details open style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, background: "#fff", marginBottom: 12 }}>
+        <details
+          open
+          style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, background: "#fff", marginBottom: 12 }}
+        >
           <summary style={{ cursor: "pointer", fontWeight: 700, fontSize: 16 }}>💬 Assistant (beta)</summary>
           <div style={{ marginTop: 12 }}>
             <ChatLite />
@@ -534,10 +476,10 @@ export default function Page() {
         <details open style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, background: "#fff" }}>
           <summary style={{ cursor: "pointer", fontWeight: 700, fontSize: 16 }}>📝 Document Generator (beta)</summary>
           <div style={{ marginTop: 12 }}>
-            <DocGenLite />
+            <DocGenLite selectedFile={selectedFile} />
           </div>
         </details>
       </section>
-</main>
+    </main>
   );
 }

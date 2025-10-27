@@ -11,16 +11,19 @@
     "@cedrugs/pdf-parse": "^1.0.0",
     "@supabase/supabase-js": "^2.45.4",
     "@vercel/blob": "^0.23.0",
+    "docx": "^9.5.1",
     "jszip": "^3.10.1",
     "mammoth": "^1.6.0",
     "next": "16.0.0",
     "openai": "^4.57.0",
+    "pdfjs-dist": "^5.4.296",
     "react": "18.2.0",
     "react-dom": "18.2.0",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@types/node": "^20.12.7",
+    "@types/pdfjs-dist": "^2.10.377",
     "@types/react": "^18.2.66",
     "@types/react-dom": "^18.2.22",
     "typescript": "^5.5.4"
