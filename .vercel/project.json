@@ -1,1 +1,16 @@
-{"projectId":"prj_86WLSoalXuGoLGTgbPi3X1cgmpAo","orgId":"team_OPQteweg1frIvrkFYH3sDbZv","projectName":"rfp-ai-agent"}
+{
+  "projectId": "prj_86WLSoalXuGoLGTgbPi3X1cgmpAo",
+  "orgId": "team_OPQteweg1frIvrkFYH3sDbZv",
+  "projectName": "rfp-ai-agent",
+  "settings": {
+    "createdAt": 1760959074878,
+    "framework": "nextjs",
+    "devCommand": null,
+    "installCommand": null,
+    "buildCommand": null,
+    "outputDirectory": null,
+    "rootDirectory": null,
+    "directoryListing": false,
+    "nodeVersion": "22.x"
+  }
+}
